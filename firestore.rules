@@ -1,0 +1,267 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function memberPath(teamId, uid) {
+      return /databases/$(database)/documents/teams/$(teamId)/members/$(uid);
+    }
+
+    function invitePath(teamId) {
+      return /databases/$(database)/documents/teams/$(teamId)/invites/$(request.auth.token.email);
+    }
+
+    function isMember(teamId) {
+      return signedIn()
+        && exists(memberPath(teamId, request.auth.uid))
+        && get(memberPath(teamId, request.auth.uid)).data.active == true;
+    }
+
+    function role(teamId) {
+      return get(memberPath(teamId, request.auth.uid)).data.role;
+    }
+
+    function isCoach(teamId) {
+      return isMember(teamId) && role(teamId) in ['coach', 'admin'];
+    }
+
+    function isAdmin(teamId) {
+      return isMember(teamId) && role(teamId) == 'admin';
+    }
+
+    function isBoard(teamId) {
+      return isMember(teamId) && role(teamId) == 'board';
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function validAudit(data) {
+      return data.createdAt is string && data.updatedAt is string;
+    }
+
+    function validBoardEntry(teamId, uid, data) {
+      return data.keys().hasOnly([
+          'athleteUid', 'boardDisplayName', 'focusText', 'pillar',
+          'state', 'reflectionComplete', 'updatedAt'
+        ])
+        && data.athleteUid == uid
+        && data.boardDisplayName is string
+        && data.boardDisplayName.size() >= 1
+        && data.boardDisplayName.size() <= 40
+        && data.focusText is string
+        && data.focusText.size() >= 3
+        && data.focusText.size() <= 90
+        && data.state in ['ready', 'pending']
+        && (!('pillar' in data) || data.pillar in ['persistent', 'consistent', 'resilient', 'relentless'])
+        && data.updatedAt is string;
+    }
+
+    function validSelfMembershipClaim(teamId, uid, data) {
+      return signedIn()
+        && request.auth.token.email is string
+        && request.auth.uid == uid
+        && exists(invitePath(teamId))
+        && get(invitePath(teamId)).data.active == true
+        && get(invitePath(teamId)).data.email == request.auth.token.email
+        && data.uid == uid
+        && data.email == request.auth.token.email
+        && data.role == get(invitePath(teamId)).data.role
+        && data.displayName == get(invitePath(teamId)).data.displayName
+        && data.boardDisplayName == get(invitePath(teamId)).data.boardDisplayName
+        && data.seasonId == get(invitePath(teamId)).data.seasonId
+        && data.active == true
+        && validAudit(data);
+    }
+
+    match /users/{uid} {
+      allow read: if isSelf(uid);
+      allow create: if isSelf(uid)
+        && request.resource.data.uid == uid
+        && request.resource.data.defaultTeamId is string
+        && request.resource.data.email == request.auth.token.email
+        && validAudit(request.resource.data);
+      allow update: if isSelf(uid)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.defaultTeamId == resource.data.defaultTeamId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'displayName', 'photoUrl', 'onboardingComplete',
+          'trustedDeviceOfflineEnabled', 'updatedAt', 'updatedBy'
+        ]);
+      allow delete: if false;
+    }
+
+    match /teams/{teamId} {
+      allow read: if isMember(teamId);
+      allow create, update, delete: if isAdmin(teamId);
+
+      match /members/{uid} {
+        allow read: if isMember(teamId) && (isSelf(uid) || isCoach(teamId) || isBoard(teamId));
+        allow create: if isAdmin(teamId) || validSelfMembershipClaim(teamId, uid, request.resource.data);
+        allow update, delete: if isAdmin(teamId);
+      }
+
+      match /invites/{email} {
+        allow read: if isAdmin(teamId)
+          || (signedIn() && request.auth.token.email == resource.data.email);
+        allow create, delete: if isAdmin(teamId);
+        allow update: if isAdmin(teamId)
+          || (
+            signedIn()
+            && request.auth.token.email == resource.data.email
+            && resource.data.active == true
+            && request.resource.data.active == false
+            && request.resource.data.claimedBy == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'active', 'claimedAt', 'claimedBy', 'updatedAt'
+            ])
+          );
+      }
+
+      match /seasons/{seasonId} {
+        allow read: if isMember(teamId);
+        allow write: if isAdmin(teamId);
+      }
+
+      match /practiceSessions/{sessionId} {
+        allow read: if isMember(teamId);
+        allow create, update, delete: if isCoach(teamId);
+
+        match /boardEntries/{uid} {
+          allow read: if isMember(teamId);
+          allow create, update: if (
+              isSelf(uid)
+              && get(memberPath(teamId, uid)).data.role == 'athlete'
+              && validBoardEntry(teamId, uid, request.resource.data)
+            ) || (
+              isCoach(teamId)
+              && validBoardEntry(teamId, uid, request.resource.data)
+            );
+          allow delete: if isCoach(teamId);
+        }
+      }
+
+      match /athletes/{uid} {
+        allow read: if isSelf(uid) || isCoach(teamId);
+        allow write: if false;
+
+        match /privateCheckins/{checkinId} {
+          allow read: if isSelf(uid) || isAdmin(teamId);
+          allow create, update: if isSelf(uid)
+            && request.resource.data.athleteUid == uid
+            && request.resource.data.teamId == teamId
+            && validAudit(request.resource.data);
+          allow delete: if isSelf(uid) || isAdmin(teamId);
+        }
+
+        match /goals/{goalId} {
+          allow read: if isSelf(uid) || isCoach(teamId);
+          allow create, update: if isSelf(uid)
+            && request.resource.data.athleteUid == uid
+            && validAudit(request.resource.data);
+          allow delete: if isSelf(uid) || isAdmin(teamId);
+        }
+
+        match /confidenceEvidence/{evidenceId} {
+          allow read: if isSelf(uid)
+            || isAdmin(teamId)
+            || (isCoach(teamId) && resource.data.visibility == 'coach_visible');
+          allow create: if (
+              isSelf(uid)
+              && request.resource.data.athleteUid == uid
+            ) || (
+              isCoach(teamId)
+              && request.resource.data.athleteUid == uid
+              && request.resource.data.source == 'coach'
+              && request.resource.data.visibility == 'coach_visible'
+              && request.resource.data.sourceAuthorUid == request.auth.uid
+            );
+          allow update: if isSelf(uid)
+            || (
+              isCoach(teamId)
+              && resource.data.source == 'coach'
+              && resource.data.sourceAuthorUid == request.auth.uid
+              && request.resource.data.athleteUid == uid
+              && request.resource.data.visibility == 'coach_visible'
+            );
+          allow delete: if isSelf(uid) || isAdmin(teamId);
+        }
+
+        match /competitionPlans/{planId} {
+          allow read: if isSelf(uid) || isCoach(teamId);
+          allow create, update: if isSelf(uid)
+            && request.resource.data.athleteUid == uid
+            && validAudit(request.resource.data);
+          allow delete: if isSelf(uid) || isAdmin(teamId);
+        }
+
+        match /toolkit/{itemId} {
+          allow read: if isSelf(uid) || isCoach(teamId);
+          allow create, update: if isSelf(uid)
+            && request.resource.data.athleteUid == uid
+            && validAudit(request.resource.data);
+          allow delete: if isSelf(uid) || isAdmin(teamId);
+        }
+
+        match /lessonProgress/{progressId} {
+          allow read: if isSelf(uid) || isCoach(teamId);
+          allow create, update: if isSelf(uid)
+            && request.resource.data.athleteUid == uid
+            && validAudit(request.resource.data);
+          allow delete: if isSelf(uid) || isAdmin(teamId);
+        }
+      }
+
+      match /curriculum/{lessonId} {
+        allow read: if isMember(teamId)
+          && (resource.data.status == 'published' || isCoach(teamId));
+        allow write: if isCoach(teamId);
+      }
+
+      match /exampleBuckets/{bucketId} {
+        allow read: if isMember(teamId)
+          && (resource.data.active == true || isCoach(teamId));
+        allow write: if isCoach(teamId);
+      }
+
+      match /techniqueTerms/{termId} {
+        allow read: if isMember(teamId)
+          && (resource.data.active == true || isCoach(teamId));
+        allow write: if isCoach(teamId)
+          && (!('status' in request.resource.data) || request.resource.data.status != 'rejected' || request.resource.data.active == false);
+      }
+
+      match /teamWins/{winId} {
+        allow read: if isMember(teamId)
+          && (resource.data.status == 'published' || isCoach(teamId));
+        allow write: if isCoach(teamId);
+      }
+
+      match /teamChallenges/{challengeId} {
+        allow read: if isMember(teamId);
+        allow write: if isCoach(teamId);
+      }
+
+      match /engagementEvents/{eventId} {
+        allow create: if isMember(teamId)
+          && request.resource.data.teamId == teamId
+          && (!('athleteUid' in request.resource.data) || request.resource.data.athleteUid == request.auth.uid)
+          && request.resource.data.keys().hasOnly([
+            'id', 'athleteUid', 'teamId', 'seasonId', 'event', 'occurredAt', 'metadata'
+          ]);
+        allow read: if isAdmin(teamId);
+        allow update, delete: if false;
+      }
+
+      match /auditEvents/{eventId} {
+        allow read: if isAdmin(teamId);
+        allow create: if isCoach(teamId);
+        allow update, delete: if false;
+      }
+    }
+  }
+}

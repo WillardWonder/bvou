@@ -1,0 +1,12 @@
+MERRILL GIRLS WRESTLING - GITHUB PAGES PACKAGE
+
+1. Extract this ZIP.
+2. Create a GitHub repository.
+3. Upload everything inside the extracted folder to the repository root.
+4. Use a main branch.
+5. In GitHub: Settings > Pages > Source > GitHub Actions.
+6. Commit/push. The included workflow builds and publishes the app.
+7. In Firebase Authentication, add YOUR-USERNAME.github.io as an authorized domain.
+8. Before real athlete use, enable Authentication, create Firestore, deploy firestore.rules and firestore.indexes.json, and bootstrap the first administrator.
+
+Open README.md for the full setup.
