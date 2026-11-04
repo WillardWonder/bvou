@@ -6,5 +6,3 @@ window.YOU_FIREBASE = {
   projectId: "merrill-girls-wrestling",
   appId: "PASTE_APP_ID"
 };
-// Coaches who can see the roster (must match the list in the Firestore rules).
-window.YOU_COACHES = ["stutting.josh@gmail.com", "scott.arneson@mapsedu.org"];

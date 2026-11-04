@@ -2,14 +2,16 @@
 (() => {
 const D = window.YOU, U = D.units;
 const KEY = "youu-lab-v1";
-const blank = () => ({ f: {}, prog: {}, rev: {}, logs: [], films: [], deposits: [], mats: {} });
+const blank = () => ({ f: {}, prog: {}, rev: {}, logs: [], films: [], deposits: [], mats: {}, well: {}, goals: {} });
 let S; try { S = Object.assign(blank(), JSON.parse(localStorage.getItem(KEY) || "{}")); } catch (e) { S = blank(); }
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} CLOUD.push(); };
 /* ---------- cloud sync (Firebase). Falls back to this-device-only if not configured. ---------- */
-const CFG = window.YOU_FIREBASE, COACHES = (window.YOU_COACHES || []).map(x => x.toLowerCase());
+const CFG = window.YOU_FIREBASE, OWNER = "stutting.josh@gmail.com"; let COACHES = [OWNER];
 const CLOUD = { on: false, user: null, db: null, t: null, status: "",
   ready: !!(CFG && window.firebase && CFG.apiKey && !/PASTE/.test(CFG.apiKey)),
   isCoach() { return !!this.user && COACHES.includes((this.user.email || "").toLowerCase()); },
+  isOwner() { return !!this.user && (this.user.email || "").toLowerCase() === OWNER; },
+  async loadCoaches() { try { const q = await this.db.collection("youuCoaches").get(); COACHES = [OWNER, ...q.docs.map(d => d.id.toLowerCase())]; } catch (e) {} },
   allowed(u) { const e = (u.email || "").toLowerCase(); return /@mapsedu\.org$/.test(e) || COACHES.includes(e); },
   push() { if (!this.on) return; clearTimeout(this.t); this.setStatus("saving…"); this.t = setTimeout(() => {
     this.db.collection("youu").doc(this.user.uid).set({ email: this.user.email, name: this.user.displayName || this.user.email, updatedAt: Date.now(), state: JSON.parse(JSON.stringify(S)) })
@@ -67,8 +69,10 @@ V.home = () => {
    <div class="stat"><b>${d}</b><span>Rewind due ${d ? "→ <a href='#review'>go</a>" : ""}</span></div>
    <div class="stat"><b>${S.logs.length + S.films.length}</b><span>logs</span></div>
   </div>
+  ${checked(today()) ? `<a class="card" href="#daily" style="display:block;text-decoration:none;color:inherit;border-color:var(--ok)">✓ <b>Checked in today.</b> <span class="muted">Consistency run: ${consistency()} days</span></a>` : `<a class="card" href="#daily" style="display:block;text-decoration:none;color:inherit;border-color:var(--warn)"><div class="kick" style="color:var(--warn)">15-second check-in</div><b>Water, food, sleep: tap in today →</b><div class="small muted">Consistency run: ${consistency()} days. Never miss twice.</div></a>`}
   <div class="card"><div class="kick">Today's 1%</div><label class="l">One specific, controllable behavior for today's practice</label>${inp("today1", "e.g., Be first to ties every live go")}
    <div class="small muted" style="margin-top:6px">Make it a verb + a wrestling behavior + when. "Stay in good stance through the whole live go" works. "Be better" doesn't.</div></div>
+  <div class="row"><a class="btn ghost sm" href="#card">My Competition Card</a><a class="btn ghost sm" href="#manual">What Works for Me</a></div>
   <h2>The Season Map</h2><p class="muted small" style="margin-top:-4px">Each unit builds on the last. Green bars: Learn → Build → Mat Test → Used in a match.</p>
   <div class="units">${U.map(u => { const p = P(u.n); return `<a class="u" href="#unit/${u.n}"><span class="n">${u.n}</span><b>${esc(u.title)}</b><i>${esc(u.hook)}</i><div class="ladder">${["learn", "build", "mat", "match"].map(x => `<span class="${p[x] ? "on" : ""}"></span>`).join("")}</div></a>`; }).join("")}
    <a class="u" href="#manual" style="border-color:#7a2235"><span class="n" style="background:var(--red)">★</span><b>Be You</b><i>Your "What Works for Me" manual, built from your own tools</i></a></div>
@@ -234,6 +238,79 @@ V.review = () => {
   }
 };
 
+
+/* ---------- Daily check-in: habit loop without punishment ---------- */
+const HAB = [
+  { k: "water", l: "Water", u: "bottles", t: "count", g: 4, ic: "💧" },
+  { k: "fruit", l: "Fruit", u: "servings", t: "count", g: 2, ic: "🍎" },
+  { k: "veg", l: "Veggies", u: "servings", t: "count", g: 2, ic: "🥦" },
+  { k: "protein", l: "Protein at meals", u: "meals", t: "count", g: 3, ic: "🍳" },
+  { k: "bfast", l: "Ate breakfast", t: "yes", ic: "🌅" },
+  { k: "fuelup", l: "Ate after practice", t: "yes", ic: "🔋" },
+  { k: "sleep", l: "Sleep last night", u: "hours", t: "hours", g: 8.5, ic: "🌙" },
+  { k: "sleepq", l: "Sleep quality", t: "scale", ic: "😴" },
+  { k: "screens", l: "Screens off 30 min before bed", t: "yes", ic: "📵" },
+  { k: "recover", l: "Stretch / recovery", t: "yes", ic: "🧘" },
+  { k: "ready", l: "Ready to train", t: "scale", ic: "⚡" },
+];
+const dkey = d => d.toISOString().slice(0, 10);
+const daysBack = n => Array.from({ length: n }, (_, i) => { const d = new Date(); d.setDate(d.getDate() - (n - 1 - i)); return dkey(d); });
+const goal = h => +(S.goals[h.k] ?? h.g);
+const hit = (h, v) => v === undefined || v === "" ? false : h.t === "yes" ? !!v : h.t === "scale" ? +v >= 4 : +v >= goal(h);
+const checked = day => { const w = S.well[day]; return !!w && Object.keys(w).filter(k => k[0] !== "_").length >= 3; };
+function consistency() {               // "never miss twice": run continues through single misses
+  const days = daysBack(60); let run = 0, miss = 0;
+  for (let i = days.length - 1; i >= 0; i--) { const d = days[i];
+    if (d === today() && !checked(d)) continue;     // today isn't over yet
+    if (checked(d)) { run++; miss = 0; } else { miss++; if (miss >= 2) break; } }
+  return run;
+}
+function weekAvg(k, off) { const ds = daysBack(14).slice(off ? 0 : 7, off ? 7 : 14).filter(d => S.well[d] && S.well[d][k] !== undefined && S.well[d][k] !== ""); if (!ds.length) return null; return ds.reduce((s, d) => s + (+S.well[d][k] || (S.well[d][k] === true ? 1 : 0)), 0) / ds.length; }
+function badges() {
+  const last7 = daysBack(7), b = [];
+  const n = f => last7.filter(f).length;
+  if (n(checked) >= 6) b.push(["Consistent", "Checked in 6 of the last 7 days"]);
+  if (n(d => S.well[d] && hit(HAB[6], S.well[d].sleep)) >= 5) b.push(["Persistent", "Hit your sleep goal 5 of 7 nights"]);
+  if (n(d => S.well[d] && hit(HAB[0], S.well[d].water) && hit(HAB[2], S.well[d].veg)) >= 5) b.push(["Relentless", "Water + veggie goals 5 of 7 days"]);
+  const miss2 = daysBack(14).some((d, i, a) => i > 0 && !checked(a[i - 1]) && !checked(d) && d !== today());
+  if (!miss2 && daysBack(14).filter(checked).length >= 8) b.push(["Resilient", "Two weeks without missing twice"]);
+  return b;
+}
+V.daily = () => {
+  const d = today(), w = S.well[d] = S.well[d] || {};
+  const tile = h => {
+    const v = w[h.k], ok = hit(h, v);
+    let ctl = "";
+    if (h.t === "count") ctl = `<div class="row" style="justify-content:center;gap:6px"><button class="btn ghost sm" data-dec="${h.k}">−</button><b style="font-size:24px;min-width:30px">${v || 0}</b><button class="btn sm" data-inc="${h.k}">+</button></div><div class="small muted">goal ${goal(h)} ${h.u}</div>`;
+    else if (h.t === "yes") ctl = `<button class="btn ${v ? "" : "ghost"} sm" data-tog="${h.k}">${v ? "Yes ✓" : "Tap if yes"}</button>`;
+    else if (h.t === "hours") ctl = `<div class="row" style="justify-content:center;gap:6px"><button class="btn ghost sm" data-sh="-0.5">−</button><b style="font-size:24px;min-width:44px">${v ?? "—"}</b><button class="btn sm" data-sh="0.5">+</button></div><div class="small muted">goal ${goal(h)} h · teens need 8-10</div>`;
+    else ctl = `<div class="row" style="justify-content:center;gap:4px">${[1, 2, 3, 4, 5].map(n => `<button class="btn ${+v === n ? "" : "ghost"} sm" data-sc="${h.k}" data-v="${n}" style="padding:5px 8px;min-width:0">${n}</button>`).join("")}</div>`;
+    return `<div class="card" style="text-align:center;margin:0;${ok ? "border-color:var(--ok)" : ""}"><div style="font-size:24px">${h.ic}</div><b>${h.l}</b><div style="margin-top:8px">${ctl}</div></div>`;
+  };
+  const run = consistency(), bd = badges(), dots = daysBack(14).map(x => `<span title="${x}" style="display:inline-block;width:16px;height:16px;border-radius:50%;margin:2px;background:${checked(x) ? "var(--ok)" : x === d ? "transparent" : "#1f3456"};border:${x === d ? "2px dashed var(--ok)" : "0"}"></span>`).join("");
+  const arrow = k => { const a = weekAvg(k, 0), b = weekAvg(k, 1); if (a === null || b === null) return ""; const up = a > b + 0.05, dn = a < b - 0.05; return `<span style="color:${up ? "var(--ok)" : dn ? "var(--warn)" : "var(--mute)"}">${up ? "▲" : dn ? "▼" : "■"} ${a.toFixed(1)}</span> <span class="muted small">vs ${b.toFixed(1)}</span>`; };
+  app.innerHTML = `<div class="kick" style="margin-top:16px">Daily check-in · 15 seconds</div><h1>Fuel + Recover</h1>
+  <p class="hook">Training happens on the mat. Getting better happens here too.</p>
+  <div class="card"><div class="row"><div><div class="big">${run} day${run === 1 ? "" : "s"}</div><div class="small muted">consistency run · <b>never miss twice</b>. One off day doesn't break it.</div></div><span class="sp"></span><div style="max-width:300px;text-align:right">${dots}</div></div>
+   ${!checked(d) && daysBack(2)[0] && !checked(daysBack(2)[0]) ? `<p class="small" style="color:var(--warn);margin:8px 0 0">You missed yesterday. Check in today and your run keeps going.</p>` : ""}</div>
+  <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr))">${HAB.map(tile).join("")}</div>
+  <div class="card"><div class="kick">This week vs last week · 1% better</div><div class="grid g3 small" style="margin-top:8px">
+   <div>🌙 Sleep hrs<br>${arrow("sleep") || "<span class='muted'>need 2 weeks</span>"}</div><div>💧 Water<br>${arrow("water") || "<span class='muted'>need 2 weeks</span>"}</div><div>🥦 Veggies<br>${arrow("veg") || "<span class='muted'>need 2 weeks</span>"}</div></div></div>
+  <div class="card"><div class="kick">Pillar badges · last 7 days</div>${bd.length ? bd.map(([p, t]) => `<div class="row small" style="margin:6px 0"><span class="badge b-mer" style="margin:0">${p}</span>${t}</div>`).join("") : "<p class='small muted'>Earn Consistent by checking in 6 of 7 days. Others follow.</p>"}</div>
+  <div class="card"><label class="l" style="margin-top:0">Tomorrow's 1%: one habit I'll nudge up</label>${inp("well1", "e.g., one more water bottle before practice")}
+   <details style="margin-top:12px"><summary class="small muted">Set my own goals</summary><div class="grid g3" style="margin-top:8px">${HAB.filter(h => h.g).map(h => `<div><label class="l">${h.l} (${h.u})</label><input type="number" step="${h.t === "hours" ? 0.5 : 1}" min="0" data-goal="${h.k}" value="${goal(h)}"></div>`).join("")}</div></details>
+   <p class="small muted" style="margin:10px 0 0">This tracks fuel and recovery, not your weight. Wrestlers need to eat <i>enough</i>. If making weight ever means skipping meals or water, talk to your coach or trainer.</p></div>`;
+  const set = (k, v) => { w[k] = v; save(); const sy = scrollY; V.daily(); bind(); scrollTo(0, sy); };
+  $$("[data-inc]").forEach(b => b.onclick = () => set(b.dataset.inc, (+w[b.dataset.inc] || 0) + 1));
+  $$("[data-dec]").forEach(b => b.onclick = () => set(b.dataset.dec, Math.max(0, (+w[b.dataset.dec] || 0) - 1)));
+  $$("[data-tog]").forEach(b => b.onclick = () => set(b.dataset.tog, !w[b.dataset.tog]));
+  $$("[data-sh]").forEach(b => b.onclick = () => set("sleep", Math.min(14, Math.max(0, (w.sleep ?? 8) + +b.dataset.sh))));
+  $$("[data-sc]").forEach(b => b.onclick = () => set(b.dataset.sc, +b.dataset.v));
+  $$("[data-goal]").forEach(i => i.onchange = () => { S.goals[i.dataset.goal] = +i.value; save(); });
+  bind();
+  if (checked(d) && !w._toast) { w._toast = 1; save(); toast("Checked in. 1% better ✓"); }
+};
+
 /* ---------- Breathe pacer ---------- */
 V.breathe = () => {
   app.innerHTML = `<h1>Breathe Like a Bluejay</h1><p class="hook">Coach Arnie's 4-4-4-4 puts the Core Four into every breath.</p>
@@ -378,14 +455,21 @@ V.roster = async (who) => {
     <div class="grid g2"><div class="card"><div class="kick">Today's 1%</div>${g("today1")}</div><div class="card"><div class="kick">BIG DOG cue</div>${g("cue")}</div>
     <div class="card"><div class="kick">Ready zone</div>usual ${esc(f.dialU ?? "—")} · best ${esc(f.dialB ?? "—")}</div><div class="card"><div class="kick">First Jobs</div>N: ${g("fj0")}<br>T: ${g("fj1")}<br>B: ${g("fj2")}</div></div>
     <div class="card"><div class="kick">Progress by unit</div>${U.map(u => { const p = (s.prog || {})[u.n] || {}; return `<div class="row small" style="margin:4px 0"><b style="width:160px">${u.n}. ${esc(u.title)}</b>${["learn", "build", "mat", "match"].map(x => `<span class="pill" style="${p[x] ? "background:#0a7d55;color:#fff" : ""}">${x}</span>`).join("")}</div>`; }).join("")}</div>
+    <div class="card"><div class="kick">Fuel + recover · last 7 days</div>${(() => { const ds = daysBack(7), W = s.well || {}; const av = k => { const v = ds.map(x => W[x] && W[x][k]).filter(x => x !== undefined && x !== ""); return v.length ? (v.reduce((p, c) => p + (+c || 0), 0) / v.length).toFixed(1) : "—"; }; return `<div class="small">Check-ins ${ds.filter(x => W[x] && Object.keys(W[x]).filter(k => k[0] !== "_").length >= 3).length}/7 · sleep ${av("sleep")} h · sleep quality ${av("sleepq")}/5 · water ${av("water")} · veg ${av("veg")} · fruit ${av("fruit")} · ready ${av("ready")}/5</div><div class="small muted" style="margin-top:4px">Low sleep or low "ready" across several days is a reason to check in with her as a person, not a reason to push harder.</div>`; })()}</div>
     <div class="card"><div class="kick">Recent matches (Film Room)</div>${(s.films || []).slice(-5).reverse().map(l => `<div class="small" style="margin:6px 0"><b>${l.d}</b> ${esc(l.fe)} vs ${esc(l.fo)} · ${esc(l.fr)} · process ${l.steps.length}/8 · reset ${esc(l.fsec || "?")}s<br>Improve: ${esc(l.fim)}</div>`).join("") || "<span class='muted small'>None yet.</span>"}</div>
     <div class="card"><div class="kick">Recent practices</div>${(s.logs || []).slice(-5).reverse().map(l => `<div class="small" style="margin:6px 0"><b>${l.d}</b> ${esc(l.pf)} · ${esc(l.pp)} · Went well: ${esc(l.pw)} · Improve: ${esc(l.pi)}</div>`).join("") || "<span class='muted small'>None yet.</span>"}</div>
     <p class="small muted">Use the Merrill recognition template: observation → program word → why it matters → next reinforcement.</p>`;
     return;
   }
   docs.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-  app.innerHTML = `<h1>Athlete roster</h1><p class="muted small">${docs.length} athletes signed in. Read-only. Click a name for detail.</p><div class="card"><table class="t"><tr><th>Athlete</th><th>Ladder</th><th>Practices</th><th>Matches</th><th>Last active</th></tr>
-  ${docs.map(d => { const s = d.state || {}; return `<tr><td><a href="#roster/${d.id}">${esc(d.name)}</a></td><td>${ladder(s)}%</td><td>${(s.logs || []).length}</td><td>${(s.films || []).length}</td><td class="small">${d.updatedAt ? new Date(d.updatedAt).toLocaleDateString() : "—"}</td></tr>`; }).join("")}</table></div>`;
+  const ci = s => daysBack(7).filter(x => s.well && s.well[x] && Object.keys(s.well[x]).filter(k => k[0] !== "_").length >= 3).length;
+  app.innerHTML = `<h1>Athlete roster</h1>${CLOUD.isOwner() ? `<div class="card"><div class="kick">Coaches</div><div class="small" id="coachList">${COACHES.map(c => `<div class="row" style="margin:4px 0">${esc(c)}<span class="sp"></span>${c === OWNER ? "<span class='muted'>owner</span>" : `<button class="btn ghost sm" data-rm="${esc(c)}">Remove</button>`}</div>`).join("")}</div><div class="row" style="margin-top:8px"><input type="text" id="newCoach" placeholder="coach email" style="flex:1"><button class="btn sm" id="addCoach">Add coach</button></div><p class="small muted" style="margin:6px 0 0">Coaches can read every athlete's work. Athletes can't see each other.</p></div>` : ""}
+  <p class="muted small">${docs.length} athletes signed in. Read-only. Click a name for detail.</p><div class="card"><table class="t"><tr><th>Athlete</th><th>Ladder</th><th>Check-ins (7d)</th><th>Practices</th><th>Matches</th><th>Last active</th></tr>
+  ${docs.filter(d => !COACHES.includes((d.email || "").toLowerCase())).map(d => { const s = d.state || {}; return `<tr><td><a href="#roster/${d.id}">${esc(d.name)}</a></td><td>${ladder(s)}%</td><td>${ci(s)}/7</td><td>${(s.logs || []).length}</td><td>${(s.films || []).length}</td><td class="small">${d.updatedAt ? new Date(d.updatedAt).toLocaleDateString() : "—"}</td></tr>`; }).join("")}</table></div>`;
+  if (CLOUD.isOwner()) {
+    $("#addCoach").onclick = async () => { const e = $("#newCoach").value.trim().toLowerCase(); if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) return toast("Enter a full email"); await CLOUD.db.collection("youuCoaches").doc(e).set({ addedBy: CLOUD.user.email, at: Date.now() }); await CLOUD.loadCoaches(); toast("Coach added"); V.roster(); };
+    $$("[data-rm]").forEach(b => b.onclick = async () => { await CLOUD.db.collection("youuCoaches").doc(b.dataset.rm).delete(); await CLOUD.loadCoaches(); toast("Removed"); V.roster(); });
+  }
 };
 
 /* ---------- router ---------- */
@@ -412,6 +496,7 @@ if (CLOUD.ready) {
   app.innerHTML = '<p class="muted" style="margin-top:40px;text-align:center">Loading…</p>';
   firebase.auth().onAuthStateChanged(async u => {
     if (!u) { CLOUD.on = false; CLOUD.user = null; $("#who").hidden = true; return route(); }
+    await CLOUD.loadCoaches();
     if (!CLOUD.allowed(u)) { await firebase.auth().signOut(); return V.gate(`${u.email} isn't a Merrill school account. Use your @mapsedu.org Google account.`); }
     CLOUD.user = u;
     try {
