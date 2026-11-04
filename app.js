@@ -4,7 +4,18 @@ const D = window.YOU, U = D.units;
 const KEY = "youu-lab-v1";
 const blank = () => ({ f: {}, prog: {}, rev: {}, logs: [], films: [], deposits: [], mats: {} });
 let S; try { S = Object.assign(blank(), JSON.parse(localStorage.getItem(KEY) || "{}")); } catch (e) { S = blank(); }
-const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} };
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} CLOUD.push(); };
+/* ---------- cloud sync (Firebase). Falls back to this-device-only if not configured. ---------- */
+const CFG = window.YOU_FIREBASE, COACHES = (window.YOU_COACHES || []).map(x => x.toLowerCase());
+const CLOUD = { on: false, user: null, db: null, t: null, status: "",
+  ready: !!(CFG && window.firebase && CFG.apiKey && !/PASTE/.test(CFG.apiKey)),
+  isCoach() { return !!this.user && COACHES.includes((this.user.email || "").toLowerCase()); },
+  allowed(u) { const e = (u.email || "").toLowerCase(); return /@mapsedu\.org$/.test(e) || COACHES.includes(e); },
+  push() { if (!this.on) return; clearTimeout(this.t); this.setStatus("saving…"); this.t = setTimeout(() => {
+    this.db.collection("youu").doc(this.user.uid).set({ email: this.user.email, name: this.user.displayName || this.user.email, updatedAt: Date.now(), state: JSON.parse(JSON.stringify(S)) })
+      .then(() => this.setStatus("saved ✓")).catch(e => this.setStatus("saved on device · will sync")); }, 1200); },
+  setStatus(s) { this.status = s; const w = document.getElementById("who"); if (w && this.user) w.textContent = (this.user.displayName || this.user.email).split(" ")[0] + " · " + s; }
+};
 const $ = (q, el = document) => el.querySelector(q), $$ = (q, el = document) => [...el.querySelectorAll(q)];
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const app = $("#app");
@@ -338,7 +349,7 @@ V.manual = () => {
 
 /* ---------- coach + data ---------- */
 V.coach = () => {
-  app.innerHTML = `<div class="kick" style="margin-top:16px">For coaches</div><h1>Running YOU University</h1><p class="hook">Short teaching, real reps, athlete choice. About 10 minutes a week of room time.</p>
+  app.innerHTML = `${CLOUD.isCoach() ? '<a class="btn red" href="#roster" style="margin-top:16px;display:inline-block">Open athlete roster →</a>' : ""}<div class="kick" style="margin-top:16px">For coaches</div><h1>Running YOU University</h1><p class="hook">Short teaching, real reps, athlete choice. About 10 minutes a week of room time.</p>
   <div class="card"><h3 style="margin-top:0">Weekly rhythm</h3><div class="small"><b>MON · 5 min:</b> read the Match Moment aloud and ask "what would you do?" before teaching.<br><b>TUE-WED:</b> fold Mat Test A or B into an existing live drill. Don't add a new block.<br><b>THU · 2 min:</b> Rewind out loud, no notes. Retrieval is the learning event, not a grade.<br><b>MEET:</b> Competition Card only. No new teaching at mat-side.<br><b>NEXT MON:</b> Film Room, then the next unit.</div></div>
   <div class="card"><h3 style="margin-top:0">Recognition template (Merrill)</h3><p class="small">Observation → program word → why it matters → next reinforcement. <i>"You gave up the first score, reset immediately, and attacked the next exchange. That is Resilient. Keep using the same reset."</i></p></div>
   <div class="card"><h3 style="margin-top:0">What's verified about the book</h3><p class="small"><b>Verified (publisher):</b> 4th ed., 164 pp., 7 chapters, Let's Win! International, ISBN 979-8-9882909-4-0. Focus: perform in competition as well as or better than in practice.<br><b>Verified Knight concepts:</b> Love Nerves, BIG-DOG switch, adrenaline as fuel, confidence ≠ mental toughness, Gut Breathing, BIG-DOG self-talk, Go-Time Visualization, BIG-DOG highlight reel, Competition Process, little dog / BIG Dog, instant reset.<br><b>Not verified:</b> chapter titles, order, and which chapter covers which concept. Fill in the Coach Chapter Map in the printed workbook (p. 34).<br><b>Independently developed:</b> every YOU-labeled exercise, Mat Test, reflection, and Rewind card.</p></div>
@@ -347,20 +358,73 @@ V.coach = () => {
   <p><a class="btn sm" href="YOU_University_Mental_Game_Workbook.pdf" target="_blank" rel="noopener">Printable workbook (PDF, 35 pp.)</a></p><p class="small muted">An independent Merrill companion. Not written by, endorsed by, or affiliated with Steve Knight or Let's Win! International.</p>`;
 };
 V.data = () => {
-  app.innerHTML = `<h1>Your data</h1><div class="card"><p>Everything you write stays in this browser on this device. Nothing is uploaded. If you clear your browser data or switch phones, it's gone unless you back it up.</p>
+  app.innerHTML = `<h1>Your data</h1>${CLOUD.on ? `<div class="card">Signed in as <b>${esc(CLOUD.user.email)}</b>. Your work syncs to your Merrill account. <button class="btn ghost sm" id="out">Sign out</button></div>` : ""}<div class="card"><p>${CLOUD.on ? "A copy also stays on this device so the app works without Wi-Fi in the gym. It syncs when you're back online." : "Everything you write stays in this browser on this device. If you clear your browser data or switch phones, it's gone unless you back it up."}</p>
   <div class="row"><button class="btn" id="ex">Download backup</button><label class="btn ghost">Restore backup<input type="file" id="im" accept=".json" hidden></label><button class="btn red" id="wipe">Erase everything</button></div></div>`;
+  if ($("#out")) $("#out").onclick = () => { firebase.auth().signOut(); try { localStorage.removeItem(KEY); } catch (e) {} S = blank(); location.hash = "#home"; };
   $("#ex").onclick = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(S, null, 1)], { type: "application/json" })); a.download = `you-university-backup-${today()}.json`; a.click(); };
   $("#im").onchange = e => { const r = new FileReader(); r.onload = () => { try { S = Object.assign(blank(), JSON.parse(r.result)); save(); toast("Restored"); dot(); } catch (x) { toast("That file didn't work"); } }; r.readAsText(e.target.files[0]); };
   $("#wipe").onclick = () => { if (confirm("Erase all your YOU University answers on this device?")) { S = blank(); save(); dot(); toast("Erased"); } };
 };
 
+V.roster = async (who) => {
+  if (!CLOUD.isCoach()) { app.innerHTML = "<h1>Roster</h1><div class='card'>Coaches only.</div>"; return; }
+  app.innerHTML = "<h1>Athlete roster</h1><p class='muted'>Loading…</p>";
+  let docs; try { docs = (await CLOUD.db.collection("youu").get()).docs.map(d => ({ id: d.id, ...d.data() })); } catch (e) { app.innerHTML = `<h1>Roster</h1><div class="card">Couldn't load: ${esc(e.message)}</div>`; return; }
+  const ladder = s => { let t = 0; U.forEach(u => { const p = (s.prog || {})[u.n] || {}; t += ["learn", "build", "mat", "match"].filter(x => p[x]).length; }); return Math.round(100 * t / (U.length * 4)); };
+  if (who) {
+    const d = docs.find(x => x.id === who); if (!d) return V.roster();
+    const s = Object.assign(blank(), d.state || {}), f = s.f || {}, g = k => esc((f[k] || "").trim()) || "<span class='muted'>—</span>";
+    app.innerHTML = `<a href="#roster" class="small">← Roster</a><h1>${esc(d.name)}</h1><p class="muted small">${esc(d.email)} · last active ${new Date(d.updatedAt).toLocaleString()} · ladder ${ladder(s)}%</p>
+    <div class="grid g2"><div class="card"><div class="kick">Today's 1%</div>${g("today1")}</div><div class="card"><div class="kick">BIG DOG cue</div>${g("cue")}</div>
+    <div class="card"><div class="kick">Ready zone</div>usual ${esc(f.dialU ?? "—")} · best ${esc(f.dialB ?? "—")}</div><div class="card"><div class="kick">First Jobs</div>N: ${g("fj0")}<br>T: ${g("fj1")}<br>B: ${g("fj2")}</div></div>
+    <div class="card"><div class="kick">Progress by unit</div>${U.map(u => { const p = (s.prog || {})[u.n] || {}; return `<div class="row small" style="margin:4px 0"><b style="width:160px">${u.n}. ${esc(u.title)}</b>${["learn", "build", "mat", "match"].map(x => `<span class="pill" style="${p[x] ? "background:#0a7d55;color:#fff" : ""}">${x}</span>`).join("")}</div>`; }).join("")}</div>
+    <div class="card"><div class="kick">Recent matches (Film Room)</div>${(s.films || []).slice(-5).reverse().map(l => `<div class="small" style="margin:6px 0"><b>${l.d}</b> ${esc(l.fe)} vs ${esc(l.fo)} · ${esc(l.fr)} · process ${l.steps.length}/8 · reset ${esc(l.fsec || "?")}s<br>Improve: ${esc(l.fim)}</div>`).join("") || "<span class='muted small'>None yet.</span>"}</div>
+    <div class="card"><div class="kick">Recent practices</div>${(s.logs || []).slice(-5).reverse().map(l => `<div class="small" style="margin:6px 0"><b>${l.d}</b> ${esc(l.pf)} · ${esc(l.pp)} · Went well: ${esc(l.pw)} · Improve: ${esc(l.pi)}</div>`).join("") || "<span class='muted small'>None yet.</span>"}</div>
+    <p class="small muted">Use the Merrill recognition template: observation → program word → why it matters → next reinforcement.</p>`;
+    return;
+  }
+  docs.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  app.innerHTML = `<h1>Athlete roster</h1><p class="muted small">${docs.length} athletes signed in. Read-only. Click a name for detail.</p><div class="card"><table class="t"><tr><th>Athlete</th><th>Ladder</th><th>Practices</th><th>Matches</th><th>Last active</th></tr>
+  ${docs.map(d => { const s = d.state || {}; return `<tr><td><a href="#roster/${d.id}">${esc(d.name)}</a></td><td>${ladder(s)}%</td><td>${(s.logs || []).length}</td><td>${(s.films || []).length}</td><td class="small">${d.updatedAt ? new Date(d.updatedAt).toLocaleDateString() : "—"}</td></tr>`; }).join("")}</table></div>`;
+};
+
 /* ---------- router ---------- */
 function route() {
   while (CLEAN.length) CLEAN.pop()();
+  if (CLOUD.ready && !CLOUD.on) { V.gate(); return; }
   const [v, a, b] = (location.hash.slice(1) || "home").split("/");
   $$("nav.tabs a").forEach(x => x.classList.toggle("on", x.dataset.t === v));
-  (v === "unit" ? () => V.unit(a, b || "learn") : V[v] || V.home)();
+  (v === "unit" ? () => V.unit(a, b || "learn") : v === "roster" ? () => V.roster(a) : V[v] || V.home)();
   window.scrollTo(0, 0); dot();
 }
-addEventListener("hashchange", route); route();
+addEventListener("hashchange", route);
+V.gate = (msg = "") => {
+  app.innerHTML = `<div class="gate"><img src="bluejay.png" alt=""><h1>YOU University</h1><p class="hook">Sign in with your <b>school Google account</b> (@mapsedu.org) so your work follows you to any device.</p>
+  <button class="gbtn" id="gsign"><svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.7-6.7C35.6 2.5 30.2 0 24 0 14.6 0 6.6 5.4 2.6 13.3l7.8 6C12.3 13.6 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.4c-.5 2.9-2.2 5.3-4.6 6.9l7.4 5.7c4.3-4 6.9-9.9 6.9-17.1z"/><path fill="#FBBC05" d="M10.4 28.7c-.5-1.4-.8-3-.8-4.7s.3-3.2.8-4.7l-7.8-6C.9 16.6 0 20.2 0 24s.9 7.4 2.6 10.7l7.8-6z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.4-5.7c-2.1 1.4-4.8 2.3-8.5 2.3-6.3 0-11.7-4.1-13.6-9.8l-7.8 6C6.6 42.6 14.6 48 24 48z"/></svg>Sign in with Google</button>
+  <p class="small" style="color:#ff8fa2;margin-top:14px">${esc(msg)}</p>
+  <div class="card small" style="text-align:left;margin-top:18px"><b>Who can see what you write:</b> you, and your Merrill coaches. No teammates, no one else. Write what you'd be okay with your coach reading. If something is really private, keep it on paper or talk to a counselor.</div></div>`;
+  $("#gsign").onclick = () => { const p = new firebase.auth.GoogleAuthProvider(); p.setCustomParameters({ prompt: "select_account" }); firebase.auth().signInWithPopup(p).catch(e => { if (/popup/.test(e.code)) firebase.auth().signInWithRedirect(p); else V.gate(e.message); }); };
+};
+if (CLOUD.ready) {
+  firebase.initializeApp(CFG);
+  CLOUD.db = firebase.firestore();
+  CLOUD.db.enablePersistence({ synchronizeTabs: true }).catch(() => {});
+  app.innerHTML = '<p class="muted" style="margin-top:40px;text-align:center">Loading…</p>';
+  firebase.auth().onAuthStateChanged(async u => {
+    if (!u) { CLOUD.on = false; CLOUD.user = null; $("#who").hidden = true; return route(); }
+    if (!CLOUD.allowed(u)) { await firebase.auth().signOut(); return V.gate(`${u.email} isn't a Merrill school account. Use your @mapsedu.org Google account.`); }
+    CLOUD.user = u;
+    try {
+      const snap = await CLOUD.db.collection("youu").doc(u.uid).get();
+      const lastUid = localStorage.getItem(KEY + "-uid");
+      if (snap.exists && snap.data().state) S = Object.assign(blank(), snap.data().state);
+      else if (lastUid && lastUid !== u.uid) S = blank();          // shared device: never hand one athlete's work to another
+      localStorage.setItem(KEY + "-uid", u.uid);
+    } catch (e) { toast("Offline: using this device's copy"); }
+    CLOUD.on = true; $("#who").hidden = false; CLOUD.setStatus("synced ✓");
+    try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {}
+    if (!(await CLOUD.db.collection("youu").doc(u.uid).get().catch(() => ({ exists: true }))).exists) CLOUD.push();
+    route();
+  });
+} else route();
 })();
