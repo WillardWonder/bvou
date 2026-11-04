@@ -12,7 +12,8 @@ const CLOUD = { on: false, user: null, db: null, t: null, status: "",
   isCoach() { return !!this.user && COACHES.includes((this.user.email || "").toLowerCase()); },
   isOwner() { return !!this.user && (this.user.email || "").toLowerCase() === OWNER; },
   async loadCoaches() { try { const q = await this.db.collection("youuCoaches").get(); COACHES = [OWNER, ...q.docs.map(d => d.id.toLowerCase())]; } catch (e) {} },
-  allowed(u) { const e = (u.email || "").toLowerCase(); return /@mapsedu\.org$/.test(e) || COACHES.includes(e); },
+  async allowed(u) { const e = (u.email || "").toLowerCase(); if (!u.emailVerified) return false; if (/@mapsedu\.org$/.test(e) || COACHES.includes(e)) return true;
+    try { return (await this.db.collection("youuInvites").doc(e).get()).exists; } catch (x) { return false; } },
   push() { if (!this.on) return; clearTimeout(this.t); this.setStatus("saving…"); this.t = setTimeout(() => {
     this.db.collection("youu").doc(this.user.uid).set({ email: this.user.email, name: this.user.displayName || this.user.email, updatedAt: Date.now(), state: JSON.parse(JSON.stringify(S)) })
       .then(() => this.setStatus("saved ✓")).catch(e => this.setStatus("saved on device · will sync")); }, 1200); },
@@ -464,8 +465,18 @@ V.roster = async (who) => {
   docs.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   const ci = s => daysBack(7).filter(x => s.well && s.well[x] && Object.keys(s.well[x]).filter(k => k[0] !== "_").length >= 3).length;
   app.innerHTML = `<h1>Athlete roster</h1>${CLOUD.isOwner() ? `<div class="card"><div class="kick">Coaches</div><div class="small" id="coachList">${COACHES.map(c => `<div class="row" style="margin:4px 0">${esc(c)}<span class="sp"></span>${c === OWNER ? "<span class='muted'>owner</span>" : `<button class="btn ghost sm" data-rm="${esc(c)}">Remove</button>`}</div>`).join("")}</div><div class="row" style="margin-top:8px"><input type="text" id="newCoach" placeholder="coach email" style="flex:1"><button class="btn sm" id="addCoach">Add coach</button></div><p class="small muted" style="margin:6px 0 0">Coaches can read every athlete's work. Athletes can't see each other.</p></div>` : ""}
+  <div class="card"><div class="kick">Invites (for non-@mapsedu.org emails)</div><div class="small" id="invList">Loading…</div>
+   <div class="row" style="margin-top:8px"><input type="text" id="newInv" placeholder="athlete's email" style="flex:1"><button class="btn sm" id="addInv">Invite</button></div>
+   <p class="small muted" style="margin:6px 0 0">@mapsedu.org addresses don't need an invite. After inviting, tell the athlete to open the site and sign in with that email (Google or "email me a link").</p></div>
   <p class="muted small">${docs.length} athletes signed in. Read-only. Click a name for detail.</p><div class="card"><table class="t"><tr><th>Athlete</th><th>Ladder</th><th>Check-ins (7d)</th><th>Practices</th><th>Matches</th><th>Last active</th></tr>
   ${docs.filter(d => !COACHES.includes((d.email || "").toLowerCase())).map(d => { const s = d.state || {}; return `<tr><td><a href="#roster/${d.id}">${esc(d.name)}</a></td><td>${ladder(s)}%</td><td>${ci(s)}/7</td><td>${(s.logs || []).length}</td><td>${(s.films || []).length}</td><td class="small">${d.updatedAt ? new Date(d.updatedAt).toLocaleDateString() : "—"}</td></tr>`; }).join("")}</table></div>`;
+  const drawInv = async () => { try { const q = await CLOUD.db.collection("youuInvites").get(); const joined = new Set(docs.map(d => (d.email || "").toLowerCase()));
+      $("#invList").innerHTML = q.docs.length ? q.docs.map(d => `<div class="row" style="margin:4px 0">${esc(d.id)} <span class="muted">${joined.has(d.id) ? "· signed in ✓" : "· not signed in yet"}</span><span class="sp"></span><button class="btn ghost sm" data-rminv="${esc(d.id)}">Remove</button></div>`).join("") : "<span class='muted'>No invites yet.</span>";
+      $$("[data-rminv]").forEach(b => b.onclick = async () => { await CLOUD.db.collection("youuInvites").doc(b.dataset.rminv).delete(); toast("Invite removed"); drawInv(); });
+    } catch (e) { $("#invList").textContent = "Couldn't load invites: " + e.message; } };
+  drawInv();
+  $("#addInv").onclick = async () => { const e = $("#newInv").value.trim().toLowerCase(); if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) return toast("Enter a full email");
+    try { await CLOUD.db.collection("youuInvites").doc(e).set({ invitedBy: CLOUD.user.email, at: Date.now() }); $("#newInv").value = ""; toast("Invited"); drawInv(); } catch (x) { toast("Couldn't invite: " + x.message); } };
   if (CLOUD.isOwner()) {
     $("#addCoach").onclick = async () => { const e = $("#newCoach").value.trim().toLowerCase(); if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) return toast("Enter a full email"); await CLOUD.db.collection("youuCoaches").doc(e).set({ addedBy: CLOUD.user.email, at: Date.now() }); await CLOUD.loadCoaches(); toast("Coach added"); V.roster(); };
     $$("[data-rm]").forEach(b => b.onclick = async () => { await CLOUD.db.collection("youuCoaches").doc(b.dataset.rm).delete(); await CLOUD.loadCoaches(); toast("Removed"); V.roster(); });
@@ -482,12 +493,32 @@ function route() {
   window.scrollTo(0, 0); dot();
 }
 addEventListener("hashchange", route);
-V.gate = (msg = "") => {
-  app.innerHTML = `<div class="gate"><img src="bluejay.png" alt=""><h1>YOU University</h1><p class="hook">Sign in with your <b>school Google account</b> (@mapsedu.org) so your work follows you to any device.</p>
-  <button class="gbtn" id="gsign"><svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.7-6.7C35.6 2.5 30.2 0 24 0 14.6 0 6.6 5.4 2.6 13.3l7.8 6C12.3 13.6 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.4c-.5 2.9-2.2 5.3-4.6 6.9l7.4 5.7c4.3-4 6.9-9.9 6.9-17.1z"/><path fill="#FBBC05" d="M10.4 28.7c-.5-1.4-.8-3-.8-4.7s.3-3.2.8-4.7l-7.8-6C.9 16.6 0 20.2 0 24s.9 7.4 2.6 10.7l7.8-6z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.4-5.7c-2.1 1.4-4.8 2.3-8.5 2.3-6.3 0-11.7-4.1-13.6-9.8l-7.8 6C6.6 42.6 14.6 48 24 48z"/></svg>Sign in with Google</button>
-  <p class="small" style="color:#ff8fa2;margin-top:14px">${esc(msg)}</p>
-  <div class="card small" style="text-align:left;margin-top:18px"><b>Who can see what you write:</b> you, and your Merrill coaches. No teammates, no one else. Write what you'd be okay with your coach reading. If something is really private, keep it on paper or talk to a counselor.</div></div>`;
+V.gate = (msg = "", note = "") => {
+  const G = '<svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.7-6.7C35.6 2.5 30.2 0 24 0 14.6 0 6.6 5.4 2.6 13.3l7.8 6C12.3 13.6 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.4c-.5 2.9-2.2 5.3-4.6 6.9l7.4 5.7c4.3-4 6.9-9.9 6.9-17.1z"/><path fill="#FBBC05" d="M10.4 28.7c-.5-1.4-.8-3-.8-4.7s.3-3.2.8-4.7l-7.8-6C.9 16.6 0 20.2 0 24s.9 7.4 2.6 10.7l7.8-6z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.4-5.7c-2.1 1.4-4.8 2.3-8.5 2.3-6.3 0-11.7-4.1-13.6-9.8l-7.8 6C6.6 42.6 14.6 48 24 48z"/></svg>';
+  const finishing = firebase.auth().isSignInWithEmailLink(location.href);
+  app.innerHTML = `<div class="gate"><img src="bluejay.png" alt=""><h1>YOU University</h1>
+  ${finishing ? `<p class="hook">Confirm your email to finish signing in.</p><input type="text" id="em" inputmode="email" autocomplete="email" placeholder="you@mapsedu.org" value="${esc(localStorage.getItem(KEY + "-email") || "")}"><button class="btn" id="finish" style="margin-top:10px;width:100%">Finish signing in</button>`
+  : `<p class="hook">Sign in so your work follows you to any device.</p>
+  <button class="gbtn" id="gsign">${G}Sign in with Google</button>
+  <div class="muted small" style="margin:16px 0 8px">or get a one-tap link by email (no password)</div>
+  <input type="text" id="em" inputmode="email" autocomplete="email" placeholder="you@mapsedu.org"><button class="btn" id="link" style="margin-top:10px;width:100%">Email me a sign-in link</button>`}
+  ${note ? `<p class="small" style="color:#bfe8d6;margin-top:12px">${esc(note)}</p>` : ""}
+  <p class="small" style="color:#ff8fa2;margin-top:12px">${esc(msg)}</p>
+  <div class="card small" style="text-align:left;margin-top:18px"><b>Who can get in:</b> any @mapsedu.org address, or an email your coach has invited.<br><b>Who can see what you write:</b> you and your Merrill coaches. No teammates, no one else. If something is really private, keep it on paper or talk to a counselor.</div></div>`;
+  const email = () => ($("#em").value || "").trim().toLowerCase();
+  if (finishing) {
+    $("#finish").onclick = () => firebase.auth().signInWithEmailLink(email(), location.href)
+      .then(() => { localStorage.removeItem(KEY + "-email"); history.replaceState(null, "", location.pathname + "#home"); })
+      .catch(e => V.gate(e.code === "auth/invalid-action-code" ? "That link expired or was already used. Request a new one." : e.message));
+    if (localStorage.getItem(KEY + "-email")) $("#finish").click();
+    return;
+  }
   $("#gsign").onclick = () => { const p = new firebase.auth.GoogleAuthProvider(); p.setCustomParameters({ prompt: "select_account" }); firebase.auth().signInWithPopup(p).catch(e => { if (/popup/.test(e.code)) firebase.auth().signInWithRedirect(p); else V.gate(e.message); }); };
+  $("#link").onclick = () => { const e = email(); if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) return toast("Enter your full email");
+    $("#link").disabled = true;
+    firebase.auth().sendSignInLinkToEmail(e, { url: location.origin + location.pathname, handleCodeInApp: true })
+      .then(() => { localStorage.setItem(KEY + "-email", e); V.gate("", `Link sent to ${e}. Open it on this device. Check spam/junk if you don't see it in a minute.`); })
+      .catch(x => V.gate(x.message)); };
 };
 if (CLOUD.ready) {
   firebase.initializeApp(CFG);
@@ -497,7 +528,7 @@ if (CLOUD.ready) {
   firebase.auth().onAuthStateChanged(async u => {
     if (!u) { CLOUD.on = false; CLOUD.user = null; $("#who").hidden = true; return route(); }
     await CLOUD.loadCoaches();
-    if (!CLOUD.allowed(u)) { await firebase.auth().signOut(); return V.gate(`${u.email} isn't a Merrill school account. Use your @mapsedu.org Google account.`); }
+    if (!(await CLOUD.allowed(u))) { const em = u.email; await firebase.auth().signOut(); return V.gate(`${em} isn't a Merrill school account and hasn't been invited yet. Use your @mapsedu.org email, or ask your coach to invite this address.`); }
     CLOUD.user = u;
     try {
       const snap = await CLOUD.db.collection("youu").doc(u.uid).get();

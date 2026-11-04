@@ -1,5 +1,4 @@
     // ---- YOU University Lab (bvou site) ----
-    // Paste inside `match /databases/{database}/documents { ... }`, replacing the earlier YOU University block.
     function youuOwner() {
       return request.auth != null && request.auth.token.email == 'stutting.josh@gmail.com'
         && request.auth.token.email_verified == true;
@@ -8,15 +7,23 @@
       return youuOwner() || (request.auth != null && request.auth.token.email_verified == true
         && exists(/databases/$(database)/documents/youuCoaches/$(request.auth.token.email.lower())));
     }
+    function youuInvited() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/youuInvites/$(request.auth.token.email.lower()));
+    }
     match /youuCoaches/{email} {
       allow read: if request.auth != null;
       allow write: if youuOwner();
+    }
+    match /youuInvites/{email} {
+      allow get: if request.auth != null && (request.auth.token.email.lower() == email || youuCoach());
+      allow list, create, update, delete: if youuCoach();
     }
     match /youu/{uid} {
       allow read: if request.auth != null && (request.auth.uid == uid || youuCoach());
       allow create, update: if request.auth != null && request.auth.uid == uid
         && request.auth.token.email_verified == true
-        && (request.auth.token.email.matches('.*@mapsedu[.]org$') || youuCoach())
+        && (request.auth.token.email.matches('.*@mapsedu[.]org$') || youuCoach() || youuInvited())
         && request.resource.data.keys().hasOnly(['email', 'name', 'updatedAt', 'state'])
         && request.resource.data.email == request.auth.token.email
         && request.resource.data.state is map;
